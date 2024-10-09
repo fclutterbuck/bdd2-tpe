@@ -2,7 +2,12 @@
 --la cual se debe controlar que sea al menos 6 meses posterior a la de su alta
 
 ALTER TABLE Persona
-ADD CONSTRAINT Persona_fecha_baja CHECK (activo = TRUE and fecha_baja >= fecha_alta + interval '6 months'); --NO ME SUENA. VER CON TRIGGER
+ADD CONSTRAINT Persona_fecha_baja
+CHECK (activo = TRUE and fecha_baja >= fecha_alta + interval '6 months'); --NO ME SUENA. VER CON TRIGGER
+
+ALTER TABLE Persona
+ADD CONSTRAINT Persona_fecha_baja
+CHECK ((activo = TRUE) OR (fecha_baja >= fecha_alta + interval '6 months'); -- VERSION FEDE. ME SUENA INCREIBLE
 
 --Pasados los 6 meses de su alta, en cualquier momento el cliente puede solicitar la baja,
 -- quedando entonces inactivo, siempre y cuando no adeude ningún servicio.
