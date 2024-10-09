@@ -1,17 +1,40 @@
 --Las personas que no están activas deben tener establecida una fecha de baja,
 --la cual se debe controlar que sea al menos 6 meses posterior a la de su alta
 
+--INCISO a
 ALTER TABLE Persona
     ADD CONSTRAINT Persona_fecha_baja
-        CHECK (activo = TRUE and fecha_baja >= fecha_alta + interval '6 months'); --NO ME SUENA. VER CON TRIGGER
+        CHECK (activo = TRUE OR (activo = FALSE AND fecha_baja >= fecha_alta + interval '6 months')); --NO ME SUENA. VER CON TRIGGER
 
-/*
+/* REGLA DE NEGOCIO DE ENUNCIADO PREVIO A LOS EJERCICIOS:
+Pasados los 6 meses de su alta, en cualquier momento el cliente puede solicitar la baja,
+quedando entonces inactivo, siempre y cuando no adeude ningún servicio.*/
+
+CREATE OR REPLACE FUNCTION baja_voluntaria() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.activo = TRUE THEN
+        IF EXISTS (SELECT 1
+                   FROM Equipo E
+                   JOIN Cliente c USING(id_cliente) --NO SE SI ES LO EFICIENTE
+                   WHERE E.id_cliente = NEW.id_persona AND E.fecha_baja IS NULL AND C.saldo > 0) THEN
+            RAISE EXCEPTION 'No se puede dar de baja a una persona que adeuda servicios';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tr_baja_voluntaria
+BEFORE UPDATE OF activo ON Persona
+FOR EACH ROW
+EXECUTE function baja_voluntaria();
+
+/*        INCISO b
  El importe de un comprobante debe coincidir con el total de los importes
  indicados en las líneas que lo conforman (si las tuviera).
  */
 /*
  de forma declarativa. no funciona en postrgreSQL
-
 create assertion importe_comprobantes
 check ( not exists ( select 1 from comprobante c
                      where importe != (select sum(importe)
@@ -57,6 +80,31 @@ create or replace trigger tri_importes_lineacomprobante
     after insert or delete or update of importe,id_comp,id_tcomp on lineacomprobante
     for each row
     execute function fn_actualizar_importe_linea();
+
+
+
+/*INCISO C:
+  Las IPs asignadas a los equipos no pueden ser compartidas entre diferentes clientes.
+ */
+
+/*
+CREATE ASERTION direccion_ip
+check ( not exists ( select ip from equipo e = (select ip from equipo e2 where e.id_cliente != e2.id_cliente)
+*/
+
+create or replace function fn_comp_ip()
+    returns trigger as $$
+    begin
+        if (exists(select 1 from equipo where ip = new.ip AND id_cliente != new.id_cliente)) then --Verifico si el ip ya esta asignado en otro cliente. ¿UN CLIENTE PUEDE TENER MAS DE UNA IP? ¿O DOS EQUIPOS CON UNA IP?
+            raise exception 'La IP pertenece ya se encuentra asignada en otro cliente';
+        end if;
+    end;
+    $$language 'plpgsql';
+
+create or replace trigger tri_comp_ip
+    after insert or update of ip on equipo
+    for each row
+    execute function fn_comp_ip();
 
 
 
@@ -124,5 +172,3 @@ INSERT INTO LineaComprobante (nro_linea, id_comp, id_tcomp, descripcion, cantida
                                                                                                              (18, 18, 7, 'Producto R', 3, 3250.50),
                                                                                                              (19, 19, 8, 'Producto S', 1, 4500.25),
                                                                                                              (20, 20, 9, 'Producto T', 4, 1375.75);
-
-
