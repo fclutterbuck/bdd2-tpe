@@ -1,85 +1,102 @@
---Las personas que no están activas deben tener establecida una fecha de baja,
---la cual se debe controlar que sea al menos 6 meses posterior a la de su alta
+/*
+1.a
+    Las personas que no están activas deben tener establecida una fecha de baja,
+    la cual se debe controlar que sea al menos 6 meses posterior a la de su alta
+*/
 
---INCISO a
 ALTER TABLE Persona
-    ADD CONSTRAINT Persona_fecha_baja
-        CHECK (activo = TRUE OR (activo = FALSE AND fecha_baja >= fecha_alta + interval '6 months')); --NO ME SUENA. VER CON TRIGGER
+ADD CONSTRAINT Persona_fecha_baja
+CHECK ((activo = TRUE) OR (fecha_baja >= fecha_alta + interval '6 months'));
 
-/* REGLA DE NEGOCIO DE ENUNCIADO PREVIO A LOS EJERCICIOS:
-Pasados los 6 meses de su alta, en cualquier momento el cliente puede solicitar la baja,
-quedando entonces inactivo, siempre y cuando no adeude ningún servicio.*/
+
+
+/*
+REGLAS DE NEGOCIO DE ENUNCIADO PREVIO A LOS EJERCICIOS:
+
+ - Pasados los 6 meses de su alta, en cualquier momento el cliente puede solicitar la baja,
+   quedando entonces inactivo, siempre y cuando no adeude ningún servicio.
+
+ - (posible) TipoComprobante: el atributo 'tipo' que solo pueda ser 'Factura', 'Recibo' o 'Remito'.
+*/
 
 CREATE OR REPLACE FUNCTION baja_voluntaria() RETURNS TRIGGER AS $$
 BEGIN
-    IF NEW.activo = TRUE THEN
-        IF EXISTS (SELECT 1
-                   FROM Equipo E
-                   JOIN Cliente c USING(id_cliente) --NO SE SI ES LO EFICIENTE
-                   WHERE E.id_cliente = NEW.id_persona AND E.fecha_baja IS NULL AND C.saldo > 0) THEN
-            RAISE EXCEPTION 'No se puede dar de baja a una persona que adeuda servicios';
+    IF (NEW.activo = TRUE) THEN
+        IF (NEW.fecha_alta + INTERVAL '6 months' > CURRENT_DATE) THEN
+            IF (EXISTS (SELECT 1
+                       FROM Cliente c
+                       WHERE (c.id_cliente = NEW.id_persona) AND (c.saldo > 0)
+                       )
+            ) THEN
+                RAISE EXCEPTION 'No se puede dar de baja a una persona que adeuda servicios';
+            END IF;
+        ELSE
+            RAISE EXCEPTION 'No se puede dar de baja a una persona que no haya pasado 6 meses desde su alta';
         END IF;
     END IF;
     RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+END $$ LANGUAGE 'plpgsql';
 
 CREATE TRIGGER tr_baja_voluntaria
 BEFORE UPDATE OF activo ON Persona
 FOR EACH ROW
-EXECUTE function baja_voluntaria();
+EXECUTE FUNCTION baja_voluntaria();
 
-/*        INCISO b
- El importe de un comprobante debe coincidir con el total de los importes
- indicados en las líneas que lo conforman (si las tuviera).
- */
+/*
+1.b
+    El importe de un comprobante debe coincidir con el total de los importes
+    indicados en las líneas que lo conforman (si las tuviera).
+*/
+
 /*
  de forma declarativa. no funciona en postrgreSQL
 create assertion importe_comprobantes
-check ( not exists ( select 1 from comprobante c
-                     where importe != (select sum(importe)
-                                        from lineacomprobante lc
-                                        where c.id_comp = lc.id_comp and c.id_tcomp = lc.id_tcomp)
-       ))
+check (not exists (select 1 from comprobante c
+                   where importe != (select sum(importe)
+                                     from lineacomprobante lc
+                                     where (c.id_comp = lc.id_comp) and (c.id_tcomp = lc.id_tcomp)
+                                     )
+                   )
+       )
 */
+
 create or replace function fn_actualizar_importe_comprobante()
-    returns trigger as $$
+returns trigger as $$
 begin
-    if (exists(select 1 from lineacomprobante where id_comp=new.id_comp and id_tcomp=new.id_tcomp)) and
-    (new.importe != (select sum(importe) from lineacomprobante where id_comp=new.id_comp and id_tcomp=new.id_tcomp))
-        then
-            raise exception 'El importe ingresado no coincide con el total de importes de sus lineas';
+    if (exists (select 1 from lineacomprobante where id_comp = new.id_comp and id_tcomp = new.id_tcomp))
+        and (new.importe != (select sum(importe) from lineacomprobante where id_comp = new.id_comp and id_tcomp = new.id_tcomp))
+    then
+        raise exception 'El importe ingresado no coincide con el total de importes de sus lineas';
     end if;
-end;
-$$language 'plpgsql';
+    return new;
+end $$ language 'plpgsql';
 
 create or replace trigger tri_actualiza_importe_comprobante
-    after update of importe on comprobante
-    for each row
+after update of importe on comprobante
+for each row
 execute function fn_actualizar_importe_comprobante();
 
 create or replace function fn_actualizar_importe_linea()
 returns trigger as $$
-    begin
-        if (tg_op = 'insert' or tg_op = 'update') then
-            if (new.importe != 0) then
-                raise exception 'El importe de la linea no es valido, ya que cambia el importe del comprobante';
-            end if;
-            return new;
+begin
+    if (tg_op = 'insert' or tg_op = 'update') then
+        if (new.importe != 0) then
+            raise exception 'El importe de la linea no es valido, ya que cambia el importe del comprobante';
         end if;
-        if (tg_op = 'delete') then
-            if (old.importe != 0) then
-                raise exception 'No es posible eliminar la linea, ya que cambia el importe del comprobante';
-            end if;
-            return old;
+        return new;
+    end if;
+    if (tg_op = 'delete') then
+        if (old.importe != 0) then
+            raise exception 'No es posible eliminar la linea, ya que cambia el importe del comprobante';
         end if;
-    end;
-    $$language 'plpgsql';
+        return old;
+    end if;
+end $$ language 'plpgsql';
 
 create or replace trigger tri_importes_lineacomprobante
-    after insert or delete or update of importe,id_comp,id_tcomp on lineacomprobante
-    for each row
-    execute function fn_actualizar_importe_linea();
+after insert or delete or update of importe,id_comp,id_tcomp on lineacomprobante
+for each row
+execute function fn_actualizar_importe_linea();
 
 
 
@@ -93,18 +110,64 @@ check ( not exists ( select ip from equipo e = (select ip from equipo e2 where e
 */
 
 create or replace function fn_comp_ip()
-    returns trigger as $$
-    begin
-        if (exists(select 1 from equipo where ip = new.ip AND id_cliente != new.id_cliente)) then --Verifico si el ip ya esta asignado en otro cliente. ¿UN CLIENTE PUEDE TENER MAS DE UNA IP? ¿O DOS EQUIPOS CON UNA IP?
-            raise exception 'La IP pertenece ya se encuentra asignada en otro cliente';
-        end if;
-    end;
-    $$language 'plpgsql';
+returns trigger as $$
+begin
+    if (exists (select 1
+                from equipo
+                where (ip = new.ip) AND (id_cliente != new.id_cliente) -- ID CLIENTE no deberia prohibirse que sea null?
+                )
+    ) then --Verifico si el ip ya esta asignado en otro cliente. ¿UN CLIENTE PUEDE TENER MAS DE UNA IP? ¿O DOS EQUIPOS CON UNA IP?
+        raise exception 'La IP pertenece ya se encuentra asignada en otro cliente';
+    end if;
+end $$ language 'plpgsql';
 
 create or replace trigger tri_comp_ip
-    after insert or update of ip on equipo
-    for each row
-    execute function fn_comp_ip();
+after insert or update of ip on equipo
+for each row
+execute function fn_comp_ip();
+
+
+/*
+ 2-a. Al ser invocado (una vez por mes), para todos los servicios que son periódicos, se deben
+      generar e insertar los registros asociados a la/s factura/s correspondiente/s a los distintos
+      clientes. Indicar si se deben proveer parámetros adicionales para su generación y, de ser así,
+      cuales.
+ */
+CREATE OR REPLACE FUNCTION fn_cobrar_servicios_periodicos() -- DUDOSO
+RETURNS TRIGGER AS $$
+DECLARE importe_servicio int;
+BEGIN
+    IF (EXISTS (SELECT 1 -- Se fija que existe el cliente y que esta activo
+                FROM Persona p
+                WHERE (NEW.id_cliente = p.id_persona) AND (p.activo = TRUE)
+                )
+    ) AND (EXISTS (SELECT id_servicio -- Buscamos llegar a Servicio por medio de Equipo para saber si el servicio es periodico
+                   FROM Equipo e
+                   WHERE (NEW.id_cliente = e.id_cliente) AND (e.fecha_baja IS NULL) AND (EXISTS(SELECT s.costo INTO importe_servicio -- Nos fijamos que el servicio existe, que es periodico y si es asi, nos guardamos el costo en la variable importe_servicio
+                                                                                                FROM Servicio s
+                                                                                                WHERE (e.id_servicio = s.id_servicio) AND (s.perdiodico = TRUE)
+                                                                                                )
+                                                                                        )
+                   )
+    ) AND (EXISTS (SELECT 1 -- Nos fijamos que el tipo del comprobante sea una factura
+                   FROM TipoComprobante tc
+                   WHERE (NEW.id_tcomp = tc.id_tcomp) AND (tc.tipo = 'Factura')
+                   )
+    ) AND (NEW.estado != 'Pago') -- Evitamos a los comprobantes de estado 'pago' (DUDA)
+    THEN
+        INSERT INTO Comprobante VALUES (NEW.id_comp, NEW.id_tcomp, CURRENT_DATE, NEW.comentario, NEW.estado, NEW.fecha_vencimiento, NEW.id_turno, importe_servicio, NEW.id_cliente, NEW.id_lugar);
+    ELSE
+        RAISE EXCEPTION 'No ha sido posible generar un comprobante a partir del servicio indicado.';
+    END IF;
+END $$ LANGUAGE 'plpgsql';
+
+CREATE OR REPLACE TRIGGER tr_cobrar_servicios_periodicos
+BEFORE INSERT OR UPDATE ON Comprobante -- Fijarse si no hay qu eponer un atributo en especifico para que se ejecute
+FOR EACH ROW
+EXECUTE FUNCTION fn_cobrar_servicios_periodicos();
+
+
+
 
 
 
