@@ -162,7 +162,7 @@ BEGIN
         --VER SI INSERTAR EN LA TABLA LINEACOMPROBANTE EL DETALLE DE LA FACTURA.
 
         end loop;
-        RAISE NOTICE 'Facturas correctamente generadas para servicios periodicos en el dia de la fecha : ',fecha_facturacion;
+        RAISE NOTICE 'Facturas correctamente generadas para servicios periodicos en el dia de la fecha';
 END;
     $$;
 -------------------------------------------------------------
