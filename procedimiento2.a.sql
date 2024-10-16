@@ -199,8 +199,32 @@ LANGUAGE 'plpgsql' AS $$
     end;
     $$;
 
+/* 3a a. Vista1, que contenga el saldo de cada uno de los clientes menores de 30 años de la ciudad ‘Napoli, que posean más de 3 servicios. */
+
+CREATE OR REPLACE VIEW Vista1 AS
+    SELECT e.id_cliente, c.saldo, p.nombre, b.id_ciudad
+    FROM Equipo e
+        JOIN Cliente c ON e.id_cliente = c.id_cliente
+        JOIN Persona p ON c.id_cliente = p.id_persona
+        JOIN direccion d ON p.id_persona = d.id_persona
+        JOIN Barrio b ON d.id_barrio = b.id_barrio
+        JOIN Ciudad ci ON b.id_ciudad = ci.id_ciudad
+    WHERE ci.nombre = 'Napoli' AND AGE(p.fecha_nacimiento) > INTERVAL '30 years'
+    GROUP BY e.id_cliente, c.saldo, p.nombre, b.id_ciudad
+    HAVING COUNT(e.id_servicio) > 3;
 
 
 
+/* 3b. Vista2, con los datos de los clientes activos del sistema que hayan sido dados de alta en el
+    año actual y que poseen al menos un servicio activo, incluyendo el/los servicio/s activo/s que
+    cada uno posee y su costo.*/
 
-
+CREATE OR REPLACE VIEW Vista2 AS
+    SELECT p.nombre, c.*, s.id_servicio, s.nombre, s.costo
+    FROM Cliente c
+        JOIN Persona p USING (id_persona)
+        JOIN Equipo e USING (id_cliente)
+        JOIN Servicio s USING (id_servicio)
+    WHERE (p.activo = TRUE)
+        AND (EXTRACT(YEAR FROM p.fecha_alta) = EXTRACT(YEAR FROM CURRENT_DATE))
+        AND (s.activo = TRUE)
