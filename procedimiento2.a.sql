@@ -202,18 +202,29 @@ LANGUAGE 'plpgsql' AS $$
 /* 3a a. Vista1, que contenga el saldo de cada uno de los clientes menores de 30 años de la ciudad ‘Napoli, que posean más de 3 servicios. */
 
 CREATE OR REPLACE VIEW Vista1 AS
-    SELECT e.id_cliente, c.saldo, p.nombre, b.id_ciudad
-    FROM Equipo e
-        JOIN Cliente c ON e.id_cliente = c.id_cliente
-        JOIN Persona p ON c.id_cliente = p.id_persona
-        JOIN direccion d ON p.id_persona = d.id_persona
-        JOIN Barrio b ON d.id_barrio = b.id_barrio
-        JOIN Ciudad ci ON b.id_ciudad = ci.id_ciudad
-    WHERE ci.nombre = 'Napoli' AND AGE(p.fecha_nacimiento) > INTERVAL '30 years'
-    GROUP BY e.id_cliente, c.saldo, p.nombre, b.id_ciudad
-    HAVING COUNT(e.id_servicio) > 3;
+    SELECT c.id_cliente,c.saldo,p.nombre,p.apellido
+    FROM persona p
+        JOIN cliente c ON p.id_persona = c.id_cliente
+        JOIN direccion d ON p.id_persona = D.id_persona
+        JOIN barrio b ON d.id_barrio = b.id_barrio
+        JOIN ciudad ci ON b.id_ciudad = ci.id_ciudad
+    WHERE (ci.nombre='Napoli') AND (EXTRACT(YEAR FROM AGE(p.fecha_nacimiento))<30) AND (c.id_cliente IN
+                                                                                        (SELECT e.id_cliente
+                                                                                         FROM equipo e
+                                                                                         GROUP BY e.id_cliente
+                                                                                         HAVING COUNT(DISTINCT e.id_servicio) > 2)
+        );
 
+CREATE OR REPLACE FUNCTION fn_vista1_delete()
+RETURNS TRIGGER AS $$
+    BEGIN
+       DELETE FROM EQUIPO WHERE id_cliente = old.id_cliente;
+    END;
+    $$ LANGUAGE 'plpgsql';
 
+CREATE TRIGGER tr_vista1_delete
+    INSTEAD OF DELETE ON Vista1
+    FOR EACH ROW EXECUTE FUNCTION fn_vista1_delete();
 
 /* 3b. Vista2, con los datos de los clientes activos del sistema que hayan sido dados de alta en el
     año actual y que poseen al menos un servicio activo, incluyendo el/los servicio/s activo/s que
