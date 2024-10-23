@@ -202,7 +202,7 @@ LANGUAGE 'plpgsql' AS $$
 /* 3a a. Vista1, que contenga el saldo de cada uno de los clientes menores de 30 años de la ciudad ‘Napoli, que posean más de 3 servicios. */
 
 CREATE OR REPLACE VIEW Vista1 AS
-    SELECT c.id_cliente,c.saldo,p.nombre,p.apellido
+    SELECT c.id_cliente,c.saldo
     FROM persona p
         JOIN cliente c ON p.id_persona = c.id_cliente
         JOIN direccion d ON p.id_persona = D.id_persona
@@ -212,30 +212,77 @@ CREATE OR REPLACE VIEW Vista1 AS
                                                                                         (SELECT e.id_cliente
                                                                                          FROM equipo e
                                                                                          GROUP BY e.id_cliente
-                                                                                         HAVING COUNT(DISTINCT e.id_servicio) > 2)
+                                                                                         HAVING COUNT(DISTINCT e.id_servicio) > 3)
         );
 
-CREATE OR REPLACE FUNCTION fn_vista1_delete()
+CREATE OR REPLACE FUNCTION fn_tri_Vista1()
 RETURNS TRIGGER AS $$
     BEGIN
-       DELETE FROM EQUIPO WHERE id_cliente = old.id_cliente;
+        /*
+         Se toma accion depende de la operacion que se haya hecho sobre la vista, se busca dar consistencia a las tablas base,
+         ya que en el script de creacion de las tablas no hay acciones referenciales ante baja, alta o modificaciones.
+         */
+        IF (TG_OP = 'DELETE') THEN
+            DELETE FROM cliente WHERE id_cliente=old.id_cliente;
+            RETURN OLD;
+        end if;
+        IF (TG_OP = 'UPDATE') THEN
+            IF EXISTS (SELECT 1 FROM cliente WHERE new.id_cliente=id_cliente) THEN
+                RAISE EXCEPTION 'No se permite actualizar el id_cliente';
+            ELSE
+                UPDATE cliente SET id_cliente=new.id_cliente,saldo=new.saldo WHERE id_cliente=new.id_cliente;
+            END IF;
+            RETURN NEW;
+        end if;
+        IF (TG_OP = 'INSERT') THEN
+            IF EXISTS(SELECT 1 FROM cliente WHERE new.id_cliente=id_cliente) THEN
+                RAISE EXCEPTION 'El cliente ya existe.';
+            ELSE
+                INSERT INTO cliente (id_cliente, saldo)
+                VALUES (new.id_cliente, new.saldo);
+            END IF;
+            RETURN NEW;
+        end if;
     END;
     $$ LANGUAGE 'plpgsql';
 
-CREATE TRIGGER tr_vista1_delete
-    INSTEAD OF DELETE ON Vista1
-    FOR EACH ROW EXECUTE FUNCTION fn_vista1_delete();
+CREATE OR REPLACE TRIGGER tr_delete_vista1
+    INSTEAD OF DELETE OR INSERT OR UPDATE ON Vista1
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_tri_Vista1();
+
+/*
+ Se plantearon sentencias para la activacion del trigger instead of sobre la vista1 :
+ */
+INSERT INTO Vista1 (id_cliente, saldo) VALUES (30,3333);
+
 
 /* 3b. Vista2, con los datos de los clientes activos del sistema que hayan sido dados de alta en el
     año actual y que poseen al menos un servicio activo, incluyendo el/los servicio/s activo/s que
     cada uno posee y su costo.*/
 
 CREATE OR REPLACE VIEW Vista2 AS
-    SELECT p.nombre, c.*, s.id_servicio, s.nombre, s.costo
+    SELECT c.id_cliente, c.saldo, s.id_servicio, s.nombre as nombre_servicio, s.costo as costo_servicio
     FROM Cliente c
-        JOIN Persona p USING (id_persona)
+        JOIN Persona p on c.id_cliente = p.id_persona
         JOIN Equipo e USING (id_cliente)
         JOIN Servicio s USING (id_servicio)
     WHERE (p.activo = TRUE)
         AND (EXTRACT(YEAR FROM p.fecha_alta) = EXTRACT(YEAR FROM CURRENT_DATE))
-        AND (s.activo = TRUE)
+        AND (s.activo = TRUE);
+
+
+/*
+ Vista3, que contenga, por cada uno de los servicios periódicos registrados en el sistema,
+ los datos del servicio y el monto facturado mensualmente durante los últimos 5 años, ordenado por servicio, año, mes y monto.
+ */
+
+CREATE OR REPLACE VIEW Vista3 AS
+    SELECT s.*, EXTRACT(MONTH FROM c.fecha) AS mes, EXTRACT(YEAR FROM c.fecha) AS año, lc.importe AS monto_facturado
+    FROM servicio s
+             JOIN lineacomprobante lc ON s.id_servicio = lc.id_servicio
+             JOIN comprobante c ON lc.id_comp = c.id_comp AND lc.id_tcomp=c.id_tcomp
+    WHERE s.periodico = TRUE
+      AND c.id_tcomp = 1 -- Solo facturas
+      AND c.fecha >= NOW() - INTERVAL '5 years'
+    ORDER BY s.id_servicio, año, mes, lc.importe;
