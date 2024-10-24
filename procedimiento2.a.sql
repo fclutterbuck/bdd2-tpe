@@ -176,32 +176,33 @@ del conjunto de turnos atendidos en el periodo.
  */
 CREATE OR REPLACE FUNCTION generar_informe_empleados(inicio DATE,fin DATE)
 RETURNS TABLE
-        (   id_empleado             varchar(40),
-            cant_clientes_atendidos int,
-            tiempo_promedio_turnos  int,
-            tiempo_maximo_turnos    int
+        (   id_empleado             int,
+            cant_clientes_atendidos bigint,
+            tiempo_promedio_turnos  numeric,
+            tiempo_maximo_turnos    numeric
         )
 LANGUAGE 'plpgsql' AS $$
     DECLARE
     BEGIN
         RETURN QUERY
             SELECT
-                pl.id_personal AS id_empleado,                            -- Identificación del empleado
-                COUNT(DISTINCT co.id_cliente) AS cant_clientes_atendidos, -- Contar clientes distintos
+                pl.id_personal AS id_empleado,
+                COUNT(DISTINCT co.id_cliente) AS cant_clientes_atendidos,
                 EXTRACT(epoch FROM AVG(t.hasta - t.desde)) / 3600 AS tiempo_promedio_turnos,
                 EXTRACT(epoch FROM MAX(t.hasta - t.desde)) / 3600 AS tiempo_maximo_turnos
             FROM
                 Turno t
-                    JOIN Personal pl ON t.id_personal = pl.id_personal       -- Relacionar turnos con personal
-                    JOIN Comprobante co ON t.id_turno = co.id_turno          -- Relacionar turnos con comprobantes (para obtener clientes)
+                    JOIN Personal pl ON t.id_personal = pl.id_personal
+                    JOIN Comprobante co ON t.id_turno = co.id_turno
             WHERE
-                t.desde BETWEEN inicio AND fin                           -- Filtrar turnos entre las fechas dadas
+                t.desde BETWEEN inicio AND fin
             GROUP BY
                 pl.id_personal;
     end;
     $$;
 
-select generar_informe_empleados('2014-1-1','2015-1-1');
+
+select * FROM generar_informe_empleados('2014-1-1','2015-1-1');
 
 /* 3a a. Vista1, que contenga el saldo de cada uno de los clientes menores de 30 años de la ciudad ‘Napoli, que posean más de 3 servicios. */
 
