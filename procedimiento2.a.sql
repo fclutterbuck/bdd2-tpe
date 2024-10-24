@@ -140,32 +140,34 @@ DECLARE
     id_cliente_aux int;
     id_comp_aux int;
 BEGIN
-    for tupla_servicio in (
-        select s.id_servicio,s.costo,s.nombre
-        from servicio s
-        where (s.activo=true and s.periodico=true) --se seleccionan todos los servicios activos y periodicos de la tabla servicios.
+    FOR tupla_servicio IN (
+        SELECT s.id_servicio,s.costo,s.nombre
+        FROM servicio s
+        WHERE (s.activo=TRUE AND s.periodico=TRUE) --se seleccionan todos los servicios activos y periodicos de la tabla servicios.
     )
     LOOP
-        --se inserta un nuevo comprobante de tipo factura con la informacion del servicio y el cliente(tomado de la tabla Equipo)
-        select id_cliente into id_cliente_aux
-        from equipo e
-        where tupla_servicio.id_servicio = e.id_servicio;
+        FOR id_cliente_aux IN (
+            SELECT e.id_cliente
+            FROM equipo e
+            WHERE tupla_servicio.id_servicio=e.id_servicio
+        )
+        LOOP
+            --necesito el ultimo id_comp para agregar un nuevo registro con otro numero de id
+            SELECT max(id_comp) INTO id_comp_aux
+            FROM comprobante;
 
-        --necesito el ultimo id_comp para agregar un nuevo registro con otro numero de id
-        select max(id_comp) into id_comp_aux
-        from comprobante;
-
-        insert into comprobante (id_comp,id_tcomp,fecha,comentario,importe,id_cliente,id_lugar)
-        --se asume que el tipo de comprobante 1 es 'Factura'
-            values (id_comp_aux+1,1,fecha_facturacion,tupla_servicio.nombre,tupla_servicio.costo,id_cliente_aux,null);
-
-        --VER SI INSERTAR EN LA TABLA LINEACOMPROBANTE EL DETALLE DE LA FACTURA.
-
+            INSERT INTO comprobante (id_comp,id_tcomp,fecha,comentario,importe,id_cliente,id_lugar)
+            --se asume que el tipo de comprobante 1 es 'Factura'
+            VALUES (id_comp_aux+1,1,fecha_facturacion,tupla_servicio.nombre,tupla_servicio.costo,id_cliente_aux,null);
         end loop;
+    end loop;
         RAISE NOTICE 'Facturas correctamente generadas para servicios periodicos en el dia de la fecha';
 END;
     $$;
--------------------------------------------------------------
+
+
+call cobrar_servicios_periodicos(CURRENT_DATE);
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /*
 b. Al ser invocado entre dos fechas cualesquiera genere un informe de los empleados (personal) junto con
@@ -186,8 +188,8 @@ LANGUAGE 'plpgsql' AS $$
             SELECT
                 pl.id_personal AS id_empleado,                            -- Identificación del empleado
                 COUNT(DISTINCT co.id_cliente) AS cant_clientes_atendidos, -- Contar clientes distintos
-                AVG(t.hasta - t.desde)::int AS tiempo_promedio_turnos, -- Tiempo promedio
-                MAX(t.hasta - t.desde)::int AS tiempo_maximo_turnos   -- Tiempo máximo
+                EXTRACT(epoch FROM AVG(t.hasta - t.desde)) / 3600 AS tiempo_promedio_turnos,
+                EXTRACT(epoch FROM MAX(t.hasta - t.desde)) / 3600 AS tiempo_maximo_turnos
             FROM
                 Turno t
                     JOIN Personal pl ON t.id_personal = pl.id_personal       -- Relacionar turnos con personal
@@ -198,6 +200,8 @@ LANGUAGE 'plpgsql' AS $$
                 pl.id_personal;
     end;
     $$;
+
+select generar_informe_empleados('2014-1-1','2015-1-1');
 
 /* 3a a. Vista1, que contenga el saldo de cada uno de los clientes menores de 30 años de la ciudad ‘Napoli, que posean más de 3 servicios. */
 
@@ -286,3 +290,5 @@ CREATE OR REPLACE VIEW Vista3 AS
       AND c.id_tcomp = 1 -- Solo facturas
       AND c.fecha >= NOW() - INTERVAL '5 years'
     ORDER BY s.id_servicio, año, mes, lc.importe;
+
+
