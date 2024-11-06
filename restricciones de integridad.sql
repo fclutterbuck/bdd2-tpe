@@ -6,7 +6,7 @@
 
 ALTER TABLE Persona
 ADD CONSTRAINT Persona_fecha_baja
-CHECK ((activo = TRUE) OR (fecha_baja >= fecha_alta + interval '6 months'));
+CHECK ((activo = TRUE) OR (fecha_baja IS NOT NULL AND fecha_baja >= fecha_alta + interval '6 months'));
 
 
 
@@ -78,18 +78,27 @@ execute function fn_actualizar_importe_comprobante();
 
 create or replace function fn_actualizar_importe_linea()
 returns trigger as $$
+declare
+    importe_comprobante numeric(18,5);
 begin
     if (tg_op = 'insert' or tg_op = 'update') then
-        if (new.importe != 0) then
-            raise exception 'El importe de la linea no es valido, ya que cambia el importe del comprobante';
+        select importe into importe_comprobante
+        from comprobante c
+        where (c.id_tcomp=new.id_tcomp and c.id_comp=new.id_comp);
+
+        if (importe_comprobante != (select sum(importe) from lineacomprobante where id_comp = new.id_comp and id_tcomp = new.id_tcomp)) then
+            RAISE EXCEPTION 'El importe del comprobante no coincide con la suma de sus lineas';
         end if;
-        return new;
-    end if;
-    if (tg_op = 'delete') then
-        if (old.importe != 0) then
-            raise exception 'No es posible eliminar la linea, ya que cambia el importe del comprobante';
+        RETURN NEW;
+    elsif (tg_op = 'delete') then
+        select importe into importe_comprobante
+        from comprobante c
+        where (c.id_tcomp=old.id_tcomp and c.id_comp=old.id_comp);
+
+        if (importe_comprobante != (select sum(importe) from lineacomprobante where id_comp = old.id_comp and id_tcomp = old.id_tcomp)) then
+            RAISE EXCEPTION 'El importe del comprobante no coincide con la suma de sus lineas';
         end if;
-        return old;
+        RETURN OLD;
     end if;
 end $$ language 'plpgsql';
 
@@ -105,8 +114,16 @@ execute function fn_actualizar_importe_linea();
  */
 
 /*
-CREATE ASERTION direccion_ip
-check ( not exists ( select ip from equipo e = (select ip from equipo e2 where e.id_cliente != e2.id_cliente)
+ALTER TABLE Equipo
+ADD CONSTRAINT check_ip_cliente
+CHECK (
+    NOT EXISTS (
+        SELECT 1
+        FROM Equipo e2
+        WHERE e2.ip = ip AND e2.id_cliente = id_cliente
+    )
+);
+
 */
 
 create or replace function fn_comp_ip()
@@ -114,11 +131,12 @@ returns trigger as $$
 begin
     if (exists (select 1
                 from equipo
-                where (ip = new.ip) AND (id_cliente != new.id_cliente) -- ID CLIENTE no deberia prohibirse que sea null?
+                where (ip = new.ip) AND (id_cliente != new.id_cliente)
                 )
-    ) then --Verifico si el ip ya esta asignado en otro cliente. ¿UN CLIENTE PUEDE TENER MAS DE UNA IP? ¿O DOS EQUIPOS CON UNA IP?
+    ) then
         raise exception 'La IP pertenece ya se encuentra asignada en otro cliente';
     end if;
+    RETURN NEW;
 end $$ language 'plpgsql';
 
 create or replace trigger tri_comp_ip

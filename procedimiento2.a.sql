@@ -114,9 +114,9 @@ create or replace function fn_comp_ip()
 begin
     if (exists (select 1
                 from equipo
-                where (ip = new.ip) AND (id_cliente != new.id_cliente) -- ID CLIENTE no deberia prohibirse que sea null?
+                where (ip = new.ip) AND (id_cliente != new.id_cliente)
     )
-        ) then --Verifico si el ip ya esta asignado en otro cliente. ¿UN CLIENTE PUEDE TENER MAS DE UNA IP? ¿O DOS EQUIPOS CON UNA IP?
+        ) then
         raise exception 'La IP pertenece ya se encuentra asignada en otro cliente';
     end if;
 end $$ language 'plpgsql';
@@ -133,6 +133,7 @@ execute function fn_comp_ip();
       clientes. Indicar si se deben proveer parámetros adicionales para su generación y, de ser así,
       cuales.
  */
+
 CREATE OR REPLACE PROCEDURE cobrar_servicios_periodicos(in fecha_facturacion date)
 LANGUAGE 'plpgsql' AS $$
 DECLARE
@@ -174,6 +175,7 @@ b. Al ser invocado entre dos fechas cualesquiera genere un informe de los emplea
 la cantidad de clientes distintos que cada uno ha atendido en tal periodo y los tiempos promedio y máximo
 del conjunto de turnos atendidos en el periodo.
  */
+
 CREATE OR REPLACE FUNCTION generar_informe_empleados(inicio DATE,fin DATE)
 RETURNS TABLE
         (   id_empleado             int,
@@ -188,77 +190,61 @@ LANGUAGE 'plpgsql' AS $$
             SELECT
                 pl.id_personal AS id_empleado,
                 COUNT(DISTINCT co.id_cliente) AS cant_clientes_atendidos,
-                EXTRACT(epoch FROM AVG(t.hasta - t.desde)) / 3600 AS tiempo_promedio_turnos,
+                EXTRACT(epoch FROM AVG(t.hasta - t.desde)) / 3600 AS tiempo_promedio_turnos, -- ACOMODAR. DA RARO
                 EXTRACT(epoch FROM MAX(t.hasta - t.desde)) / 3600 AS tiempo_maximo_turnos
             FROM
-                Turno t
-                    JOIN Personal pl ON t.id_personal = pl.id_personal
-                    JOIN Comprobante co ON t.id_turno = co.id_turno
+                /*Turno t
+                    LEFT JOIN Personal pl ON t.id_personal = pl.id_personal
+                    JOIN Comprobante co ON t.id_turno = co.id_turno*/
+                Personal pl
+                    LEFT JOIN Turno t ON pl.id_personal = t.id_personal
+                    LEFT JOIN Comprobante co ON t.id_turno = co.id_turno
+
             WHERE
-                t.desde BETWEEN inicio AND fin
+                (t.desde >= inicio AND fin <= t.hasta) OR (pl.id_personal NOT IN (SELECT t2.id_personal
+                                                                                  FROM TURNO t2))
+            -- no incluye a personal sin turno porque los que no tienen turno no tienen fechas para comparar.
             GROUP BY
                 pl.id_personal;
     end;
     $$;
 
-
 select * FROM generar_informe_empleados('2014-1-1','2015-1-1');
 
 /* 3a a. Vista1, que contenga el saldo de cada uno de los clientes menores de 30 años de la ciudad ‘Napoli, que posean más de 3 servicios. */
 
-CREATE OR REPLACE VIEW Vista1 AS
-    SELECT c.id_cliente,c.saldo
-    FROM persona p
-        JOIN cliente c ON p.id_persona = c.id_cliente
-        JOIN direccion d ON p.id_persona = D.id_persona
-        JOIN barrio b ON d.id_barrio = b.id_barrio
-        JOIN ciudad ci ON b.id_ciudad = ci.id_ciudad
-    WHERE (ci.nombre='Napoli') AND (EXTRACT(YEAR FROM AGE(p.fecha_nacimiento))<30) AND (c.id_cliente IN
-                                                                                        (SELECT e.id_cliente
-                                                                                         FROM equipo e
-                                                                                         GROUP BY e.id_cliente
-                                                                                         HAVING COUNT(DISTINCT e.id_servicio) > 3)
-        );
-
-CREATE OR REPLACE FUNCTION fn_tri_Vista1()
-RETURNS TRIGGER AS $$
-    BEGIN
-        /*
-         Se toma accion depende de la operacion que se haya hecho sobre la vista, se busca dar consistencia a las tablas base,
-         ya que en el script de creacion de las tablas no hay acciones referenciales ante baja, alta o modificaciones.
-         */
-        IF (TG_OP = 'DELETE') THEN
-            DELETE FROM cliente WHERE id_cliente=old.id_cliente;
-            RETURN OLD;
-        end if;
-        IF (TG_OP = 'UPDATE') THEN
-            IF EXISTS (SELECT 1 FROM cliente WHERE new.id_cliente=id_cliente) THEN
-                RAISE EXCEPTION 'No se permite actualizar el id_cliente';
-            ELSE
-                UPDATE cliente SET id_cliente=new.id_cliente,saldo=new.saldo WHERE id_cliente=new.id_cliente;
-            END IF;
-            RETURN NEW;
-        end if;
-        IF (TG_OP = 'INSERT') THEN
-            IF EXISTS(SELECT 1 FROM cliente WHERE new.id_cliente=id_cliente) THEN
-                RAISE EXCEPTION 'El cliente ya existe.';
-            ELSE
-                INSERT INTO cliente (id_cliente, saldo)
-                VALUES (new.id_cliente, new.saldo);
-            END IF;
-            RETURN NEW;
-        end if;
-    END;
-    $$ LANGUAGE 'plpgsql';
-
-CREATE OR REPLACE TRIGGER tr_delete_vista1
-    INSTEAD OF DELETE OR INSERT OR UPDATE ON Vista1
-    FOR EACH ROW
-    EXECUTE FUNCTION fn_tri_Vista1();
+ CREATE OR REPLACE VIEW Vista1 AS
+ SELECT c.id_cliente,c.saldo
+ FROM cliente c
+ WHERE c.id_cliente IN(
+                    SELECT p.id_persona
+                    FROM persona p
+                    WHERE (EXTRACT(YEAR FROM AGE(p.fecha_nacimiento))<30)
+                    AND p.id_persona IN(
+                                    SELECT d.id_persona
+                                    FROM direccion d
+                                    WHERE d.id_barrio IN(
+                                                    SELECT b.id_barrio
+                                                    FROM barrio b
+                                                    WHERE b.id_ciudad IN(
+                                                                    SELECT ci.id_ciudad
+                                                                    FROM ciudad ci
+                                                                    WHERE ci.nombre = 'Napoli'
+                                                                    )
+                                                    )
+                                    )
+                    AND p.id_persona IN(
+                                    SELECT e.id_cliente
+                                    FROM equipo e
+                                    GROUP BY e.id_cliente
+                                    HAVING COUNT(DISTINCT e.id_servicio) > 3
+                                    )
+                );
 
 /*
  Se plantearon sentencias para la activacion del trigger instead of sobre la vista1 :
  */
+
 INSERT INTO Vista1 (id_cliente, saldo) VALUES (30,3333);
 
 
@@ -276,7 +262,35 @@ CREATE OR REPLACE VIEW Vista2 AS
         AND (EXTRACT(YEAR FROM p.fecha_alta) = EXTRACT(YEAR FROM CURRENT_DATE))
         AND (s.activo = TRUE);
 
+CREATE OR REPLACE FUNCTION fn_tri_act_vista2()
+RETURNS TRIGGER AS $$
+    BEGIN
+        IF (TG_OP = 'DELETE') THEN
+            DELETE FROM cliente WHERE id_cliente=old.id_cliente;
+            DELETE FROM servicio WHERE id_servicio=old.id_servicio; --AND NOT EXISTS (SELECT 1 FROM Equipo WHERE id_servicio = OLD.id_servicio); --POR SI EL SERVICIO ESTA ASOCIADO A OTRO CLIENTE.
+            RETURN OLD;
+        ELSIF (TG_OP = 'INSERT') THEN
+            RAISE EXCEPTION 'NO ES POSIBLE HACER UN INSERT'; --MOMENTANEO CHAVALES
+        ELSIF (TG_OP = 'UPDATE') THEN
+            UPDATE cliente
+            SET id_cliente=new.id_cliente, saldo=new.saldo
+            WHERE id_cliente=old.id_cliente;
 
+            UPDATE servicio
+            SET id_servicio=new.id_servicio, nombre=new.nombre_servicio, costo=new.costo_servicio
+            WHERE id_servicio=old.id_servicio;
+        END IF;
+    end;
+    $$LANGUAGE 'plpgsql';
+
+
+
+
+
+CREATE OR REPLACE TRIGGER tri_act_vista2
+    INSTEAD OF delete on Vista2
+    for each row
+    execute function fn_tri_act_vista2();
 /*
  Vista3, que contenga, por cada uno de los servicios periódicos registrados en el sistema,
  los datos del servicio y el monto facturado mensualmente durante los últimos 5 años, ordenado por servicio, año, mes y monto.
@@ -291,5 +305,6 @@ CREATE OR REPLACE VIEW Vista3 AS
       AND c.id_tcomp = 1 -- Solo facturas
       AND c.fecha >= NOW() - INTERVAL '5 years'
     ORDER BY s.id_servicio, año, mes, lc.importe;
+
 
 
