@@ -134,40 +134,97 @@ execute function fn_comp_ip();
       cuales.
  */
 
-CREATE OR REPLACE PROCEDURE cobrar_servicios_periodicos(in fecha_facturacion date)
-LANGUAGE 'plpgsql' AS $$
+/*hacer un comprobante por cada cliente que tenga un servicio periodico activo en el mes.*/
+/*CREATE OR REPLACE FUNCTION generar_nro_comprobante()
+    RETURNS INT AS $$
 DECLARE
-    tupla_servicio RECORD;
-    id_cliente_aux int;
-    id_comp_aux int;
+    max_comprobante INT;
+    nuevo_comprobante INT;
 BEGIN
-    FOR tupla_servicio IN (
-        SELECT s.id_servicio,s.costo,s.nombre
-        FROM servicio s
-        WHERE (s.activo=TRUE AND s.periodico=TRUE) --se seleccionan todos los servicios activos y periodicos de la tabla servicios.
-    )
-    LOOP
-        FOR id_cliente_aux IN (
-            SELECT e.id_cliente
-            FROM equipo e
-            WHERE tupla_servicio.id_servicio=e.id_servicio
-        )
-        LOOP
-            --necesito el ultimo id_comp para agregar un nuevo registro con otro numero de id
-            SELECT max(id_comp) INTO id_comp_aux
-            FROM comprobante;
+    -- Obtener el máximo número de comprobante actual
+    SELECT COALESCE(MAX(id_comp), 0) INTO max_comprobante
+    FROM Comprobante;
 
-            INSERT INTO comprobante (id_comp,id_tcomp,fecha,comentario,importe,id_cliente,id_lugar)
-            --se asume que el tipo de comprobante 1 es 'Factura'
-            VALUES (id_comp_aux+1,1,fecha_facturacion,tupla_servicio.nombre,tupla_servicio.costo,id_cliente_aux,null);
-        end loop;
-    end loop;
-        RAISE NOTICE 'Facturas correctamente generadas para servicios periodicos en el dia de la fecha';
+    -- Generar el siguiente número de comprobante, incrementando de la secuencia
+    nuevo_comprobante := max_comprobante + 1;
+
+    -- Si la secuencia está fuera de sincronización, ajustar el valor
+    IF nuevo_comprobante < currval('seq_comprobante') THEN
+        -- Si el valor actual en la secuencia es mayor que el valor máximo, sincronizamos la secuencia
+        PERFORM setval('seq_comprobante', nuevo_comprobante, false);
+    END IF;
+
+    -- Devuelve el nuevo número de comprobante
+    RETURN nuevo_comprobante;
 END;
-    $$;
+$$ LANGUAGE plpgsql;
+*/
+CREATE OR REPLACE FUNCTION generar_nro_comprobante()
+    RETURNS INT AS $$
+DECLARE
+    max_comprobante INT;
+    nuevo_comprobante INT;
+BEGIN
+    -- Obtener el máximo número de comprobante actual
+    SELECT COALESCE(MAX(id_comp), 0) INTO max_comprobante
+    FROM Comprobante;
 
+    -- Si max_comprobante es mayor al valor actual de la secuencia, reiniciarla
+    IF max_comprobante >= nextval('seq_comprobante') THEN
+        -- Ejecutar ALTER SEQUENCE para reiniciar la secuencia en un valor superior al máximo comprobante
+        EXECUTE 'ALTER SEQUENCE seq_comprobante RESTART WITH ' || (max_comprobante + 1);
+    END IF;
 
-call cobrar_servicios_periodicos(CURRENT_DATE);
+    -- Obtener el siguiente valor de la secuencia sincronizada
+    RETURN nextval('seq_comprobante');
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE SEQUENCE seq_comprobante START 1;
+
+DELETE FROM comprobante where extract(year from fecha) = 2024;
+
+CREATE OR REPLACE PROCEDURE cobrar_servicios_periodicos(in fecha_facturacion date)
+    LANGUAGE 'plpgsql' AS $$
+DECLARE
+    comprob RECORD;
+    id_comp_aux INT;
+BEGIN
+    FOR comprob IN (
+        SELECT c.id_cliente
+        FROM cliente c
+                 JOIN equipo e USING (id_cliente)
+                 JOIN SERVICIO s USING (id_servicio)
+        WHERE (s.periodico = TRUE) AND (s.activo = TRUE)
+        GROUP BY c.id_cliente
+    )
+        LOOP
+            id_comp_aux :=generar_nro_comprobante();
+            INSERT INTO comprobante (id_comp,id_tcomp,fecha,comentario,importe,id_cliente,id_lugar)
+            VALUES (id_comp_aux, 1,fecha_facturacion,'Factura de servicio periodico',0,comprob.id_cliente,null/*agregar el lugar*/);
+            INSERT INTO lineacomprobante(nro_linea, id_comp,id_tcomp,descripcion, cantidad,importe, id_servicio)
+            SELECT
+                        ROW_NUMBER() OVER(ORDER BY e.id_servicio),
+                        id_comp_aux,
+                        1,
+                        'Servicio periódico',
+                        count(e.id_servicio),
+                        s.costo,
+                        e.id_servicio
+            FROM equipo e
+                     JOIN SERVICIO s USING (id_Servicio)
+            WHERE (e.id_cliente = comprob.id_cliente AND s.activo = TRUE AND s.periodico = TRUE)
+            GROUP BY e.id_cliente, e.id_servicio, s.costo;
+            --UPDATE
+            UPDATE comprobante
+            SET importe = (SELECT SUM(importe*cantidad) FROM lineacomprobante WHERE id_comp = id_comp_aux AND id_tcomp = 1)
+            WHERE id_comp = id_comp_aux AND id_tcomp = 1;
+        end loop;
+    RAISE NOTICE 'Facturas correctamente generadas para servicios periodicos en el dia de la fecha';
+END;
+$$;
+
+call cobrar_servicios_periodicos('2018-12-09');
 -----------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /*
@@ -175,8 +232,9 @@ b. Al ser invocado entre dos fechas cualesquiera genere un informe de los emplea
 la cantidad de clientes distintos que cada uno ha atendido en tal periodo y los tiempos promedio y máximo
 del conjunto de turnos atendidos en el periodo.
  */
+drop function generar_informe_empleados(inicio timestamp, fin timestamp);
 
-CREATE OR REPLACE FUNCTION generar_informe_empleados(inicio DATE,fin DATE)
+CREATE OR REPLACE FUNCTION generar_informe_empleados(inicio timestamp,fin timestamp)
 RETURNS TABLE
         (   id_empleado             int,
             cant_clientes_atendidos bigint,
@@ -190,12 +248,9 @@ LANGUAGE 'plpgsql' AS $$
             SELECT
                 pl.id_personal AS id_empleado,
                 COUNT(DISTINCT co.id_cliente) AS cant_clientes_atendidos,
-                EXTRACT(epoch FROM AVG(t.hasta - t.desde)) / 3600 AS tiempo_promedio_turnos, -- ACOMODAR. DA RARO
-                EXTRACT(epoch FROM MAX(t.hasta - t.desde)) / 3600 AS tiempo_maximo_turnos
+                EXTRACT(epoch FROM AVG (t.hasta - t.desde)) / 3600 AS tiempo_promedio_turnos, -- ACOMODAR. DA RARO
+                EXTRACT(epoch FROM MAX (t.hasta - t.desde)) / 3600 AS tiempo_maximo_turnos
             FROM
-                /*Turno t
-                    LEFT JOIN Personal pl ON t.id_personal = pl.id_personal
-                    JOIN Comprobante co ON t.id_turno = co.id_turno*/
                 Personal pl
                     LEFT JOIN Turno t ON pl.id_personal = t.id_personal
                     LEFT JOIN Comprobante co ON t.id_turno = co.id_turno
@@ -234,11 +289,11 @@ select * FROM generar_informe_empleados('2014-1-1','2015-1-1');
                                                     )
                                     )
                     AND p.id_persona IN(
-                                    SELECT e.id_cliente
-                                    FROM equipo e
-                                    GROUP BY e.id_cliente
-                                    HAVING COUNT(DISTINCT e.id_servicio) > 3
-                                    )
+                        SELECT e.id_cliente
+                        FROM equipo e
+                        WHERE (SELECT COUNT(e2.id_cliente)
+                               FROM equipo e2
+                               WHERE e2.id_cliente = e.id_cliente) > 3)
                 );
 
 /*
