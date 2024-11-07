@@ -270,7 +270,8 @@ RETURNS TRIGGER AS $$
             DELETE FROM servicio WHERE id_servicio=old.id_servicio; --AND NOT EXISTS (SELECT 1 FROM Equipo WHERE id_servicio = OLD.id_servicio); --POR SI EL SERVICIO ESTA ASOCIADO A OTRO CLIENTE.
             RETURN OLD;
         ELSIF (TG_OP = 'INSERT') THEN
-            RAISE EXCEPTION 'NO ES POSIBLE HACER UN INSERT'; --MOMENTANEO CHAVALES
+            RAISE EXCEPTION 'NO ES POSIBLE HACER UN INSERT';
+        -- Decidimos rechazar la operacion insert ya que para la tabla servicio nos faltan valores para completar una fila.
         ELSIF (TG_OP = 'UPDATE') THEN
             UPDATE cliente
             SET id_cliente=new.id_cliente, saldo=new.saldo
@@ -280,6 +281,7 @@ RETURNS TRIGGER AS $$
             SET id_servicio=new.id_servicio, nombre=new.nombre_servicio, costo=new.costo_servicio
             WHERE id_servicio=old.id_servicio;
         END IF;
+    RETURN NULL;
     end;
     $$LANGUAGE 'plpgsql';
 
@@ -288,7 +290,7 @@ RETURNS TRIGGER AS $$
 
 
 CREATE OR REPLACE TRIGGER tri_act_vista2
-    INSTEAD OF delete on Vista2
+    INSTEAD OF delete or insert or update on Vista2
     for each row
     execute function fn_tri_act_vista2();
 /*
