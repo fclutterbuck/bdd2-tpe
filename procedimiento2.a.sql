@@ -364,4 +364,37 @@ CREATE OR REPLACE VIEW Vista3 AS
     ORDER BY s.id_servicio, año, mes, lc.importe;
 
 
+CREATE OR REPLACE FUNCTION fn_tri_act_vista3()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'DELETE') THEN
+        -- preguntar si el servicio es periodico no hace falta ni en pedo no??
+        DELETE FROM servicio WHERE id_servicio = OLD.id_servicio;
+        RETURN OLD;
+    ELSIF (TG_OP = 'UPDATE') THEN
+        -- Hace falta preguntar si existe el nuevo id_cat (fk) en comprobante (tabla de donde se importa)??
+        -- YO (yo eh, yo (fede)) opino que no porque eso ya lo manejan las RIR propias del manejo de keys (pero no sé, es todo suponer).
+        UPDATE servicio
+        SET id_servicio = NEW.id_servicio,
+            nombre = NEW.nombre,
+            periodico = NEW.periodico,
+            costo = NEW.costo,
+            intervalo = NEW.intervalo,
+            activo = NEW.activo,
+            id_cat = NEW.id_cat
+        WHERE id_servicio = OLD.id_servicio;
+        RETURN NEW;
+    ELSIF (TG_OP = 'INSERT') THEN
+        -- Hace falta preguntar si existe el nuevo id_cat (fk) en comprobante (tabla de donde se importa)??
+        -- YO (yo eh, yo (fede)) opino que no porque eso ya lo manejan las RIR propias del manejo de keys (pero no sé, es todo suponer).
+        INSERT INTO servicio (id_servicio, nombre, periodico, costo, intervalo, activo, id_cat)
+            VALUES (NEW.id_servicio, NEW.nombre, NEW.periodico, NEW.costo, NEW.intervalo, NEW.activo, NEW.id_cat);
+        RETURN NEW;
+    END IF;
+    RETURN NULL;
+END $$ LANGUAGE 'plpgsql';
 
+CREATE OR REPLACE TRIGGER tri_act_vista3
+INSTEAD OF DELETE OR UPDATE OR INSERT ON Vista3
+FOR EACH ROW
+EXECUTE FUNCTION fn_tri_act_vista3();
